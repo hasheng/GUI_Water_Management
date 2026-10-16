@@ -1,0 +1,232 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Data;
+using Avalonia.Layout;
+using Avalonia.Media;
+using WaterMgmt.Core;
+
+namespace WaterMgmt.App;
+
+public partial class MainWindow
+{
+    record TakingRow(TakingRecord Rec, string Source)
+    {
+        public string Date => Rec.Date.ToString("yyyy-MM-dd");
+        public string Litres => Rec.Litres.ToString("N0");
+        public string Minutes => Rec.PumpingMinutes?.ToString("0.#") ?? "";
+    }
+
+    static DataGridTextColumn Col(string header, string path, bool ro = false, double? width = null)
+    {
+        var c = new DataGridTextColumn { Header = header, Binding = new Binding(path), IsReadOnly = ro };
+        if (width != null) c.Width = new DataGridLength(width.Value);
+        return c;
+    }
+
+    // ---------- Features ----------
+    readonly DataGrid featGrid = new() { AutoGenerateColumns = false, CanUserSortColumns = true };
+    readonly TextBlock featSummary = new() { Margin = new Thickness(8), FontSize = 14 };
+
+    Control BuildFeaturesTab()
+    {
+        featGrid.Columns.Add(Col("Name", "Name"));
+        featGrid.Columns.Add(Col("Type", "Kind", true));
+        featGrid.Columns.Add(new DataGridCheckBoxColumn { Header = "Dewatered", Binding = new Binding("Dewatered") });
+        featGrid.Columns.Add(Col("Rated L/min", "RatedLpm"));
+        featGrid.Columns.Add(Col("Notes", "Notes", false, 300));
+        var dock = new DockPanel();
+        DockPanel.SetDock(featSummary, Dock.Top); dock.Children.Add(featSummary); dock.Children.Add(featGrid);
+        return dock;
+    }
+
+    void RefreshFeatures()
+    {
+        featGrid.ItemsSource = null; featGrid.ItemsSource = project.Features;
+        int C(FeatureKind k) => project.Features.Count(f => f.Kind == k);
+        var cap = project.Features.Where(f => f.Kind == FeatureKind.Pump).Sum(f => f.RatedLpm ?? 0);
+        featSummary.Text = $"{C(FeatureKind.Pit)} pits ({project.Features.Count(f => f.Dewatered)} dewatered) · {C(FeatureKind.StormPond)} storm ponds · " +
+            $"{C(FeatureKind.Sump)} sumps · {C(FeatureKind.Well)} wells · {C(FeatureKind.WashStation)} wash stations · {C(FeatureKind.Pump)} pumps ({cap:N0} L/min rated) · {project.Links.Count} pipes";
+    }
+
+    // ---------- Permit & takings ----------
+    readonly TextBox siteName = new() { Width = 220 }, permitNo = new() { Width = 160 }, holder = new() { Width = 220 };
+    readonly DatePicker issued = new(), expires = new();
+    readonly DataGrid srcGrid = new() { AutoGenerateColumns = false, Height = 180 };
+    readonly DataGrid takeGrid = new() { AutoGenerateColumns = false, IsReadOnly = true };
+    readonly ComboBox takeSrc = new() { MinWidth = 180 };
+    readonly DatePicker takeDate = new();
+    readonly TextBox takeL = new() { Width = 100, Watermark = "Litres" }, takeMin = new() { Width = 90, Watermark = "Minutes" };
+    bool loadingPermit;
+
+    Control BuildPermitTab()
+    {
+        siteName.LostFocus += (_, _) => SavePermitFields(); permitNo.LostFocus += (_, _) => SavePermitFields(); holder.LostFocus += (_, _) => SavePermitFields();
+        issued.SelectedDateChanged += (_, _) => SavePermitFields(); expires.SelectedDateChanged += (_, _) => SavePermitFields();
+        srcGrid.Columns.Add(Col("Source (pump / well / pit)", "Name", false, 220));
+        srcGrid.Columns.Add(Col("Max L/min", "MaxLitresPerMinute"));
+        srcGrid.Columns.Add(Col("Max L/day", "MaxLitresPerDay"));
+        srcGrid.Columns.Add(Col("Max days/year", "MaxDaysPerYear"));
+        takeGrid.Columns.Add(Col("Date", "Date")); takeGrid.Columns.Add(Col("Source", "Source", false, 220));
+        takeGrid.Columns.Add(Col("Litres", "Litres")); takeGrid.Columns.Add(Col("Minutes", "Minutes"));
+        var p = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
+        p.Children.Add(Row(Lbl("Site"), siteName, Lbl("PTTW #"), permitNo, Lbl("Holder"), holder));
+        p.Children.Add(Row(Lbl("Issued"), issued, Lbl("Expires"), expires));
+        p.Children.Add(new TextBlock { Text = "Permitted sources and limits (Ontario PTTW)", FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 0) });
+        p.Children.Add(srcGrid);
+        p.Children.Add(Row(Btn("Add source", () => { project.Permit.Sources.Add(new PermitSource { Name = "New source" }); RefreshPermit(); }),
+            Btn("Remove selected source", () => { if (srcGrid.SelectedItem is PermitSource s) { project.Permit.Sources.Remove(s); RefreshPermit(); } })));
+        p.Children.Add(new TextBlock { Text = "Daily takings", FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 0) });
+        p.Children.Add(Row(takeDate, takeSrc, takeL, takeMin, Btn("Add taking", AddTaking),
+            Btn("Delete selected", () => { if (takeGrid.SelectedItem is TakingRow r) { project.Takings.Remove(r.Rec); RefreshPermit(); } })));
+        var dock = new DockPanel();
+        DockPanel.SetDock(p, Dock.Top); dock.Children.Add(p); dock.Children.Add(takeGrid);
+        return new ScrollViewer { Content = dock };
+    }
+
+    void SavePermitFields()
+    {
+        if (loadingPermit) return;
+        project.SiteName = siteName.Text ?? ""; project.Permit.Number = permitNo.Text ?? ""; project.Permit.Holder = holder.Text ?? "";
+        project.Permit.Issued = issued.SelectedDate?.DateTime; project.Permit.Expires = expires.SelectedDate?.DateTime;
+    }
+
+    void AddTaking()
+    {
+        var i = takeSrc.SelectedIndex;
+        if (i < 0 || takeDate.SelectedDate == null || !double.TryParse(takeL.Text, out var l)) { SetStatus("Pick a date, source, and litres."); return; }
+        project.Takings.Add(new TakingRecord
+        {
+            Date = takeDate.SelectedDate.Value.DateTime, SourceId = project.Permit.Sources[i].Id, Litres = l,
+            PumpingMinutes = double.TryParse(takeMin.Text, out var m) ? m : null
+        });
+        RefreshPermit();
+    }
+
+    void RefreshPermit()
+    {
+        loadingPermit = true;
+        siteName.Text = project.SiteName; permitNo.Text = project.Permit.Number; holder.Text = project.Permit.Holder;
+        issued.SelectedDate = project.Permit.Issued; expires.SelectedDate = project.Permit.Expires;
+        loadingPermit = false;
+        srcGrid.ItemsSource = null; srcGrid.ItemsSource = project.Permit.Sources;
+        takeSrc.ItemsSource = project.Permit.Sources.Select(s => s.Name).ToList();
+        takeGrid.ItemsSource = project.Takings.OrderByDescending(t => t.Date).Take(1000)
+            .Select(t => new TakingRow(t, project.Permit.Sources.FirstOrDefault(s => s.Id == t.SourceId)?.Name ?? "(unknown)")).ToList();
+    }
+
+    // ---------- Import ----------
+    List<string[]> importRows = new();
+    readonly TextBox importPreview = new() { IsReadOnly = true, FontFamily = new FontFamily("Consolas,monospace"), Height = 260, AcceptsReturn = true };
+    readonly TextBox importLog = new() { IsReadOnly = true, Height = 150, AcceptsReturn = true };
+    readonly TextBox headerRowBox = new() { Width = 60, Text = "1" };
+    readonly ComboBox mDate = new() { MinWidth = 140 }, mSrc = new() { MinWidth = 140 }, mVol = new() { MinWidth = 140 }, mMin = new() { MinWidth = 140 };
+    readonly ComboBox mUnit = new() { ItemsSource = Enum.GetValues<VolumeUnit>(), SelectedIndex = 0 };
+    readonly CheckBox mCreate = new() { Content = "Create unknown sources as new permit sources" };
+
+    Control BuildImportTab()
+    {
+        headerRowBox.LostFocus += (_, _) => RemapImport(false);
+        var p = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
+        p.Children.Add(new TextBlock { Text = "Load the client's Excel/CSV, confirm which row holds the headers, and map the columns.", TextWrapping = TextWrapping.Wrap });
+        p.Children.Add(Row(Btn("Open spreadsheet…", async () => await OpenImportFile()), Lbl("Header row #"), headerRowBox));
+        p.Children.Add(importPreview);
+        p.Children.Add(Row(Lbl("Date"), mDate, Lbl("Source"), mSrc, Lbl("Volume"), mVol, Lbl("Minutes (optional)"), mMin, Lbl("Unit"), mUnit));
+        p.Children.Add(mCreate);
+        p.Children.Add(Row(Btn("Import takings", RunImport)));
+        p.Children.Add(importLog);
+        return new ScrollViewer { Content = p };
+    }
+
+    async Task OpenImportFile()
+    {
+        var path = await PickOpen("Spreadsheet", "*.xlsx", "*.xlsm", "*.csv");
+        if (path == null) return;
+        try
+        {
+            importRows = SpreadsheetImporter.ReadRows(path);
+            headerRowBox.Text = (SpreadsheetImporter.GuessHeaderRow(importRows) + 1).ToString();
+            RemapImport(true); SetStatus($"Read {importRows.Count} rows from {Path.GetFileName(path)}");
+        }
+        catch (Exception ex) { importLog.Text = "Could not read file: " + ex.Message; }
+    }
+
+    int HeaderIdx => int.TryParse(headerRowBox.Text, out var h) ? Math.Clamp(h - 1, 0, Math.Max(0, importRows.Count - 1)) : 0;
+
+    void RemapImport(bool guess)
+    {
+        if (importRows.Count == 0) return;
+        importPreview.Text = string.Join("\n", importRows.Take(15).Select((r, i) => $"{i + 1,3}: {string.Join(" | ", r)}"));
+        var header = importRows[HeaderIdx];
+        var names = new List<string> { "(none)" }; names.AddRange(header.Select((h, i) => $"{i + 1}: {h}"));
+        foreach (var c in new[] { mDate, mSrc, mVol, mMin }) c.ItemsSource = names;
+        var g = SpreadsheetImporter.GuessMapping(header);
+        mDate.SelectedIndex = g.DateCol + 1; mSrc.SelectedIndex = g.SourceCol + 1;
+        mVol.SelectedIndex = g.VolumeCol + 1; mMin.SelectedIndex = g.MinutesCol + 1; mUnit.SelectedItem = g.Unit;
+    }
+
+    void RunImport()
+    {
+        if (importRows.Count == 0) { importLog.Text = "Open a file first."; return; }
+        var m = new ImportMapping
+        {
+            DateCol = mDate.SelectedIndex - 1, SourceCol = mSrc.SelectedIndex - 1, VolumeCol = mVol.SelectedIndex - 1,
+            MinutesCol = mMin.SelectedIndex - 1, Unit = (VolumeUnit)(mUnit.SelectedItem ?? VolumeUnit.Litres),
+            CreateMissingSources = mCreate.IsChecked == true
+        };
+        var r = SpreadsheetImporter.Apply(project, importRows, HeaderIdx, m);
+        importLog.Text = $"Imported {r.Imported} rows.\n" +
+            (r.CreatedSources.Count > 0 ? "Created sources: " + string.Join(", ", r.CreatedSources.Distinct()) + "\n" : "") +
+            string.Join("\n", r.Warnings.Take(200));
+        SetStatus($"Imported {r.Imported} takings; {r.Warnings.Count} warnings.");
+    }
+
+    // ---------- Compliance & reports ----------
+    readonly DataGrid sumGrid = new() { AutoGenerateColumns = false, IsReadOnly = true, Height = 200 };
+    readonly DataGrid excGrid = new() { AutoGenerateColumns = false, IsReadOnly = true };
+    readonly ComboBox yearBox = new() { MinWidth = 100 };
+    readonly TextBlock excHeader = new() { FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8) };
+    bool loadingYears;
+
+    Control BuildReportTab()
+    {
+        sumGrid.Columns.Add(Col("Source", "Source", false, 200)); sumGrid.Columns.Add(Col("Total L", "TotalLitres"));
+        sumGrid.Columns.Add(Col("Days", "DaysTaking")); sumGrid.Columns.Add(Col("Max day L", "MaxDayLitres"));
+        sumGrid.Columns.Add(Col("Limit L/day", "LimitLpd")); sumGrid.Columns.Add(Col("Max L/min", "MaxLpm"));
+        sumGrid.Columns.Add(Col("Limit L/min", "LimitLpm")); sumGrid.Columns.Add(Col("Limit days", "LimitDays"));
+        excGrid.Columns.Add(Col("Date", "Date")); excGrid.Columns.Add(Col("Source", "Source", false, 200));
+        excGrid.Columns.Add(Col("Rule", "Rule", false, 260)); excGrid.Columns.Add(Col("Actual", "Actual")); excGrid.Columns.Add(Col("Limit", "Limit"));
+        yearBox.SelectionChanged += (_, _) => { if (!loadingYears) RefreshReport(); };
+        var p = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
+        p.Children.Add(Row(Lbl("Year"), yearBox, Btn("Export HTML report…", () => Export(true)), Btn("Export CSV summary…", () => Export(false))));
+        p.Children.Add(sumGrid); p.Children.Add(excHeader);
+        var dock = new DockPanel();
+        DockPanel.SetDock(p, Dock.Top); dock.Children.Add(p); dock.Children.Add(excGrid);
+        return dock;
+    }
+
+    int? SelectedYear => yearBox.SelectedItem is int y ? y : null;
+
+    void RefreshReport()
+    {
+        loadingYears = true;
+        var prev = SelectedYear;
+        var years = project.Takings.Select(t => t.Date.Year).Distinct().OrderDescending().ToList();
+        yearBox.ItemsSource = new object[] { "All" }.Concat(years.Cast<object>()).ToList();
+        yearBox.SelectedItem = prev != null && years.Contains(prev.Value) ? prev : "All";
+        loadingYears = false;
+        sumGrid.ItemsSource = ComplianceChecker.Summarize(project, SelectedYear);
+        var exc = ComplianceChecker.Check(project, SelectedYear);
+        excHeader.Text = exc.Count == 0 ? "No exceedances recorded." : $"{exc.Count} exceedance(s)";
+        excHeader.Foreground = exc.Count == 0 ? Brushes.DarkGreen : Brushes.Firebrick;
+        excGrid.ItemsSource = exc;
+    }
+
+    async void Export(bool html)
+    {
+        var ext = html ? "html" : "csv";
+        var path = await PickSave("Export report", $"{project.SiteName} water report", ext);
+        if (path == null) return;
+        File.WriteAllText(path, html ? ReportBuilder.Html(project, SelectedYear) : ReportBuilder.Csv(project, SelectedYear));
+        SetStatus("Exported " + path);
+    }
+}
