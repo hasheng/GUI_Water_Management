@@ -19,7 +19,8 @@ public partial class MainWindow
     string toolMode = "select";            // select | add | pipe
     Guid? selNode, selLink, pipeStart;
     bool loadingProps;
-    TextBox pName = new(), pNotes = new() { AcceptsReturn = true, Height = 70 }, pRated = new(), pFlow = new(), pLabel = new();
+    HashSet<Guid> problemNodes = new();
+    TextBox pName = new(), pNotes = new() { AcceptsReturn = true, Height = 70 }, pRated = new(), pOtherIn = new(), pOtherLoss = new(), pFlow = new(), pLabel = new();
     CheckBox pDewater = new() { Content = "Actively dewatered" };
     ComboBox pSource = new() { MinWidth = 200 };
     ComboBox pKind = new() { ItemsSource = Enum.GetValues<FeatureKind>(), MinWidth = 200 };
@@ -55,11 +56,11 @@ public partial class MainWindow
         // properties
         pKind.SelectionChanged += (_, _) => ApplyNodeProps();
         pName.LostFocus += (_, _) => ApplyNodeProps(); pNotes.LostFocus += (_, _) => ApplyNodeProps();
-        pRated.LostFocus += (_, _) => ApplyNodeProps();
+        pRated.LostFocus += (_, _) => ApplyNodeProps(); pOtherIn.LostFocus += (_, _) => ApplyNodeProps(); pOtherLoss.LostFocus += (_, _) => ApplyNodeProps();
         pDewater.IsCheckedChanged += (_, _) => ApplyNodeProps(); pSource.SelectionChanged += (_, _) => ApplyNodeProps();
         pFlow.LostFocus += (_, _) => ApplyLinkProps(); pLabel.LostFocus += (_, _) => ApplyLinkProps();
         nodePanel.Spacing = 4;
-        foreach (var c in new Control[] { Lbl("Name"), pName, Lbl("Type"), pKind, pDewater, Lbl("Rated capacity (L/min)"), pRated,
+        foreach (var c in new Control[] { Lbl("Name"), pName, Lbl("Type"), pKind, pDewater, Lbl("Rated capacity (L/min)"), pRated, Lbl("Other inflow: seepage/runoff (L/min)"), pOtherIn, Lbl("Other loss: evap/wash use (L/min)"), pOtherLoss,
                      Lbl("Permit source"), pSource, Lbl("Notes"), pNotes }) nodePanel.Children.Add(c);
         linkPanel.Spacing = 4;
         foreach (var c in new Control[] { Lbl("Pipe / channel"), Lbl("Flow (L/min)"), pFlow, Lbl("Label"), pLabel,
@@ -106,6 +107,7 @@ public partial class MainWindow
             }
         }
         catch (Exception ex) { SetStatus("Image error: " + ex.Message); }
+        problemNodes = MassBalance.Compute(project, BalanceTolerance).Where(n => MassBalance.IsProblem(n.Status)).Select(n => n.Feature.Id).ToHashSet();
         foreach (var f in project.Features) AddNodeView(f);
         DrawLinks();
         ShowProps();
@@ -123,7 +125,7 @@ public partial class MainWindow
         {
             Width = NodeW, Height = NodeH, Background = KindBrush(f.Kind), Child = text, Cursor = new Cursor(StandardCursorType.Hand),
             CornerRadius = new CornerRadius(f.Kind == FeatureKind.Pump ? 22 : 6), Padding = new Thickness(4),
-            BorderThickness = new Thickness(f.Id == selNode ? 3 : 1), BorderBrush = f.Id == selNode ? Brushes.Gold : Brushes.White,
+            BorderThickness = new Thickness(f.Id == selNode || problemNodes.Contains(f.Id) ? 3 : 1), BorderBrush = f.Id == selNode ? Brushes.Gold : problemNodes.Contains(f.Id) ? Brushes.Red : Brushes.White,
             ZIndex = 10, Tag = f
         };
         Canvas.SetLeft(b, f.X); Canvas.SetTop(b, f.Y);
@@ -225,7 +227,7 @@ public partial class MainWindow
     {
         selNode = id; selLink = null;
         foreach (var (nid, v) in nodeViews)
-        { v.BorderThickness = new Thickness(nid == id ? 3 : 1); v.BorderBrush = nid == id ? Brushes.Gold : Brushes.White; }
+        { v.BorderThickness = new Thickness(nid == id ? 3 : 1); v.BorderBrush = nid == id ? Brushes.Gold : problemNodes.Contains(nid) ? Brushes.Red : Brushes.White; }
         DrawLinks(); ShowProps();
     }
 
@@ -238,7 +240,7 @@ public partial class MainWindow
         if (f != null)
         {
             pName.Text = f.Name; pKind.SelectedItem = f.Kind; pDewater.IsChecked = f.Dewatered;
-            pRated.Text = f.RatedLpm?.ToString(); pNotes.Text = f.Notes;
+            pRated.Text = f.RatedLpm?.ToString(); pOtherIn.Text = f.OtherInflowLpm?.ToString(); pOtherLoss.Text = f.OtherLossLpm?.ToString(); pNotes.Text = f.Notes;
             var names = new List<string> { "(none)" }; names.AddRange(project.Permit.Sources.Select(s => s.Name));
             pSource.ItemsSource = names;
             var idx = project.Permit.Sources.FindIndex(s => s.Id == f.PermitSourceId);
@@ -255,6 +257,7 @@ public partial class MainWindow
         f.Name = pName.Text ?? ""; f.Notes = pNotes.Text ?? ""; f.Dewatered = pDewater.IsChecked == true;
         if (pKind.SelectedItem is FeatureKind k) f.Kind = k;
         f.RatedLpm = double.TryParse(pRated.Text, out var r) ? r : null;
+        f.OtherInflowLpm = double.TryParse(pOtherIn.Text, out var oi) ? oi : null; f.OtherLossLpm = double.TryParse(pOtherLoss.Text, out var ol) ? ol : null;
         var i = pSource.SelectedIndex;
         f.PermitSourceId = i > 0 && i - 1 < project.Permit.Sources.Count ? project.Permit.Sources[i - 1].Id : null;
         RefreshMap();

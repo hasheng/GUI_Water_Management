@@ -29,6 +29,10 @@ public static class ReportBuilder
                 sb.Append($"<tr class='bad'><td>{x.Date:yyyy-MM-dd}</td><td>{E(x.Source)}</td><td>{E(x.Rule)}</td><td>{x.Actual:N0}</td><td>{x.Limit:N0}</td></tr>");
             sb.Append("</table>");
         }
+        sb.Append("<h2>Water balance (L/min)</h2><table><tr><th>Object</th><th>In</th><th>Out</th><th>Net</th><th>Status</th><th>Note</th></tr>");
+        foreach (var b in MassBalance.Compute(p).Where(b => b.Status != BalanceStatus.Boundary))
+            sb.Append($"<tr{(MassBalance.IsProblem(b.Status) ? " class='bad'" : "")}><td>{E(b.Feature.Name)}</td><td>{b.In + b.OtherIn:N0}</td><td>{b.Out + b.OtherLoss:N0}</td><td>{b.Net:N0}</td><td>{b.Status}</td><td>{E(b.Note)}</td></tr>");
+        sb.Append("</table>");
         sb.Append("<h2>Site features</h2><ul>");
         foreach (var f in p.Features.OrderBy(f => f.Kind))
             sb.Append($"<li>{f.Kind}: {E(f.Name)}{(f.Dewatered ? " (dewatered)" : "")}</li>");

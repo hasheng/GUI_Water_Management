@@ -53,3 +53,28 @@ public class CoreTests
         Assert.Contains("Pit 1 Pump", ReportBuilder.Html(q, null));
     }
 }
+
+public class MassBalanceTests
+{
+    [Fact]
+    public void Balances_Storage_Pump_Checks()
+    {
+        var p = new SiteProject();
+        var src = new PermitSource { Name = "P1", MaxLitresPerMinute = 400 }; p.Permit.Sources.Add(src);
+        var pit = new SiteFeature { Name = "Pit", Kind = FeatureKind.Pit, OtherInflowLpm = 300 };
+        var pump = new SiteFeature { Name = "Pump", Kind = FeatureKind.Pump, RatedLpm = 600, PermitSourceId = src.Id };
+        var pond = new SiteFeature { Name = "Pond", Kind = FeatureKind.StormPond };
+        p.Features.AddRange(new[] { pit, pump, pond });
+        p.Links.Add(new FlowLink { FromId = pit.Id, ToId = pump.Id, FlowLpm = 500 });
+        p.Links.Add(new FlowLink { FromId = pump.Id, ToId = pond.Id, FlowLpm = 500 });
+        var r = MassBalance.Compute(p).ToDictionary(n => n.Feature.Name);
+        Assert.Equal(BalanceStatus.StorageChange, r["Pit"].Status);   // 300 in, 500 out -> draining
+        Assert.Equal(-200, r["Pit"].Net);
+        Assert.Equal(BalanceStatus.OverPermit, r["Pump"].Status);     // 500 > 400
+        Assert.Equal(BalanceStatus.StorageChange, r["Pond"].Status);
+        p.Links[1].FlowLpm = 450; p.Permit.Sources[0].MaxLitresPerMinute = null;
+        Assert.Equal(BalanceStatus.Imbalance, MassBalance.Compute(p).First(n => n.Feature.Name == "Pump").Status);
+        p.Links[1].FlowLpm = null;
+        Assert.Equal(BalanceStatus.Incomplete, MassBalance.Compute(p).First(n => n.Feature.Name == "Pump").Status);
+    }
+}

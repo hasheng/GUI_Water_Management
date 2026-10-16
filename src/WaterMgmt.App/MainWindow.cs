@@ -24,6 +24,7 @@ public partial class MainWindow : Window
         tabs.Items.Add(new TabItem { Header = "Site Map", Content = BuildMapTab() });
         tabs.Items.Add(new TabItem { Header = "Features", Content = BuildFeaturesTab() });
         tabs.Items.Add(new TabItem { Header = "Permit & Takings", Content = BuildPermitTab() });
+        tabs.Items.Add(new TabItem { Header = "Mass Balance", Content = BuildBalanceTab() });
         tabs.Items.Add(new TabItem { Header = "Import Spreadsheet", Content = BuildImportTab() });
         tabs.Items.Add(new TabItem { Header = "Compliance & Reports", Content = BuildReportTab() });
         tabs.SelectionChanged += (_, e) => { if (e.Source == tabs) RefreshAll(); };
@@ -57,7 +58,7 @@ public partial class MainWindow : Window
     void RefreshAll()
     {
         Title = $"Quarry Water Management – {project.SiteName}{(projectPath == null ? "" : " (" + Path.GetFileName(projectPath) + ")")}";
-        RefreshMap(); RefreshFeatures(); RefreshPermit(); RefreshReport();
+        RefreshMap(); RefreshFeatures(); RefreshPermit(); RefreshBalance(); RefreshReport();
     }
 
     void SetStatus(string s) => status.Text = s;

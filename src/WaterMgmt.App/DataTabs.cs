@@ -229,4 +229,42 @@ public partial class MainWindow
         File.WriteAllText(path, html ? ReportBuilder.Html(project, SelectedYear) : ReportBuilder.Csv(project, SelectedYear));
         SetStatus("Exported " + path);
     }
+
+    // ---------- Mass balance ----------
+    readonly DataGrid balGrid = new() { AutoGenerateColumns = false, IsReadOnly = true };
+    readonly TextBox tolBox = new() { Width = 60, Text = "5" };
+    readonly TextBlock balHeader = new() { FontWeight = FontWeight.Bold, Margin = new Thickness(0, 6) };
+    double BalanceTolerance => double.TryParse(tolBox.Text, out var t) ? Math.Max(0, t) : 5;
+
+    record BalRow(NodeBalance B)
+    {
+        public string Name => B.Feature.Name; public string Type => B.Feature.Kind.ToString();
+        public string In => B.In.ToString("N0"); public string OtherIn => B.OtherIn.ToString("N0");
+        public string Out => B.Out.ToString("N0"); public string OtherLoss => B.OtherLoss.ToString("N0");
+        public string Net => B.Net.ToString("+#,0;-#,0;0"); public string Status => B.Status.ToString(); public string Note => B.Note;
+    }
+
+    Control BuildBalanceTab()
+    {
+        foreach (var (h, path, w) in new[] { ("Object", "Name", 180.0), ("Type", "Type", 100), ("Pipe in L/min", "In", 100), ("Other in", "OtherIn", 80),
+                     ("Pipe out L/min", "Out", 110), ("Other loss", "OtherLoss", 90), ("Net (storage Δ)", "Net", 110), ("Status", "Status", 120), ("Note", "Note", 380) })
+            balGrid.Columns.Add(Col(h, path, true, w));
+        tolBox.LostFocus += (_, _) => { RefreshBalance(); RefreshMap(); };
+        var p = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
+        p.Children.Add(new TextBlock { Text = "Steady-state balance from pipe flows entered on the Site Map (L/min). Pits, ponds and sumps may fill or drain; pumps, wash stations and other objects must balance. Problem objects get a red outline on the map.", TextWrapping = TextWrapping.Wrap });
+        p.Children.Add(Row(Lbl("Tolerance %"), tolBox, Btn("Recalculate", () => { RefreshBalance(); RefreshMap(); })));
+        p.Children.Add(balHeader);
+        var dock = new DockPanel();
+        DockPanel.SetDock(p, Dock.Top); dock.Children.Add(p); dock.Children.Add(balGrid);
+        return dock;
+    }
+
+    void RefreshBalance()
+    {
+        var rows = MassBalance.Compute(project, BalanceTolerance);
+        balGrid.ItemsSource = rows.Select(r => new BalRow(r)).ToList();
+        var bad = rows.Count(r => MassBalance.IsProblem(r.Status)); var inc = rows.Count(r => r.Status == BalanceStatus.Incomplete);
+        balHeader.Text = $"{bad} problem(s), {inc} incomplete";
+        balHeader.Foreground = bad == 0 ? Brushes.DarkGreen : Brushes.Firebrick;
+    }
 }

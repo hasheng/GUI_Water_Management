@@ -7,6 +7,7 @@ Ontario Permit To Take Water (PTTW) limits, import client spreadsheets, and repo
 - **Features** – table view with dewatered flags and pump capacities.
 - **Permit & Takings** – permit sources with max L/min, max L/day and max days/year; daily takings.
 - **Import Spreadsheet** – xlsx/csv with header-row detection, column mapping and unit conversion (m³, US/Imp gal).
+- **Mass Balance** – per-object in/out/storage change from pipe flows plus seepage/evaporation terms; flags imbalances, pumps over rated capacity or permit L/min (red outline on the map).
 - **Compliance & Reports** – exceedance checks (rate, daily volume, days/year, expiry, unpermitted source); HTML/CSV export.
 
 Sites are saved as `.wsite` (JSON) files.

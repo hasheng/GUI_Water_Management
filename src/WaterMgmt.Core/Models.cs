@@ -13,6 +13,10 @@ public class SiteFeature
     public bool Dewatered { get; set; }
     /// <summary>Rated capacity for pumps (L/min).</summary>
     public double? RatedLpm { get; set; }
+    /// <summary>Unmeasured inflow to this node, e.g. seepage, runoff, precipitation (L/min).</summary>
+    public double? OtherInflowLpm { get; set; }
+    /// <summary>Unmeasured loss at this node, e.g. evaporation, truck loading, wash consumption (L/min).</summary>
+    public double? OtherLossLpm { get; set; }
     /// <summary>Permit source this feature takes water under (pumps, wells, pits).</summary>
     public Guid? PermitSourceId { get; set; }
     public string Notes { get; set; } = "";
