@@ -1,0 +1,204 @@
+From bc069340b6e0b82dc938707f49af5e4177b38d66 Mon Sep 17 00:00:00 2001
+From: "z.ai agent" <agent@z.ai>
+Date: Mon, 2 Nov 2026 17:07:30 +0000
+Subject: [PATCH 1/3] Fix spreadsheet import: Hours columns and fr-CA decimal
+ numbers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two silent data-corruption paths in the importer, both dangerous on the
+under-reporting side (i.e. they hid permit exceedances):
+
+- A column headed "Hours"/"hrs"/"Heures" was mapped as pumping minutes
+  but its values were never scaled, so a 2-hour pump run read as 2 min
+  and the derived rate was 60x too low — real Max L/min breaches passed
+  unnoticed. GuessMapping now flags such columns and Apply converts
+  x60, detecting the header itself too so hand-mapped columns in the
+  import dialog are covered as well. A warning line documents the
+  conversion in the import log.
+
+- Volume/minutes parsing used .Replace(",", "") to strip thousands
+  separators, which destroys fr-CA decimal commas: "0,5" became "05"
+  and imported as 5 (10x error). TryParseDecimal now handles en
+  ("1,234.56"), fr-CA ("0,5", "1 234,5" incl. NBSP thousands) and
+  mixed ("1.234,56") forms; the right-most separator is the decimal.
+  "1,234" stays ambiguous and keeps the historical en reading (1234).
+
+Also parses Excel OADate cells culture-invariantly.
+---
+ src/WaterMgmt.Core/Importer.cs     | 53 +++++++++++++++++++++++--
+ tests/WaterMgmt.Tests/CoreTests.cs | 62 ++++++++++++++++++++++++++++++
+ 2 files changed, 112 insertions(+), 3 deletions(-)
+
+diff --git a/src/WaterMgmt.Core/Importer.cs b/src/WaterMgmt.Core/Importer.cs
+index f8db902..9ed8fad 100644
+--- a/src/WaterMgmt.Core/Importer.cs
++++ b/src/WaterMgmt.Core/Importer.cs
+@@ -11,6 +11,8 @@ public class ImportMapping
+     public int SourceCol { get; set; } = -1;
+     public int VolumeCol { get; set; } = -1;
+     public int MinutesCol { get; set; } = -1;
++    /// <summary>True when the minutes column is actually in hours (header says "Hours").</summary>
++    public bool MinutesAreHours { get; set; }
+     public VolumeUnit Unit { get; set; } = VolumeUnit.Litres;
+     public bool CreateMissingSources { get; set; }
+ }
+@@ -79,8 +81,10 @@ public static class SpreadsheetImporter
+             DateCol = Find("date", "day"),
+             SourceCol = Find("source", "pump", "well", "location", "pit", "station", "name"),
+             VolumeCol = Find("volume", "litres", "liters", "m3", "m³", "gal", "total", "taken", "pumped"),
+-            MinutesCol = Find("minutes", "mins", "runtime", "run time", "hours")
++            MinutesCol = Find("minutes", "mins", "runtime", "run time", "hour", "hrs", "heure")
+         };
++        if (m.MinutesCol >= 0)
++            m.MinutesAreHours = HeaderSaysHours(header[m.MinutesCol]);
+         var vh = m.VolumeCol >= 0 ? header[m.VolumeCol].ToLowerInvariant() : "";
+         m.Unit = vh.Contains("m3") || vh.Contains("m³") ? VolumeUnit.CubicMetres
+                : vh.Contains("usg") || vh.Contains("us gal") ? VolumeUnit.UsGallons
+@@ -97,16 +101,58 @@ public static class SpreadsheetImporter
+         _ => v
+     };
+ 
++    /// <summary>
++    /// Parses numbers written in either English or French-Canadian conventions:
++    /// "0.5", "1,234.56" (en), "0,5", "1 234,5", "1.234,56" (fr-CA, incl. non-breaking
++    /// space thousands separators that Excel emits in French locales).
++    /// When both separators appear, the right-most one is the decimal point.
++    /// A trailing comma followed by 1-2 digits is a decimal comma; otherwise a
++    /// lone comma is treated as a thousands separator ("1,234" -> 1234).
++    /// </summary>
++    public static bool TryParseDecimal(string? s, out double v)
++    {
++        v = 0;
++        if (string.IsNullOrWhiteSpace(s)) return false;
++        s = s.Trim().Replace("\u00A0", "").Replace("\u202F", "").Replace(" ", "").Replace("'", "");
++        bool hasComma = s.Contains(','), hasDot = s.Contains('.');
++        var norm = s;
++        if (hasComma && hasDot)
++        {
++            norm = s.LastIndexOf(',') > s.LastIndexOf('.')
++                ? s.Replace(".", "").Replace(',', '.')   // 1.234,5  -> 1234.5
++                : s.Replace(",", "");                    // 1,234.56 -> 1234.56
++        }
++        else if (hasComma)
++        {
++            var tail = s.Length - s.LastIndexOf(',') - 1;
++            norm = tail is 1 or 2 ? s.Replace(',', '.') : s.Replace(",", "");
++        }
++        return double.TryParse(norm, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
++    }
++
++    /// <summary>Header text indicates a runtime column expressed in hours (en/fr, incl. "hrs").</summary>
++    static bool HeaderSaysHours(string h) =>
++        h.Contains("hour", StringComparison.OrdinalIgnoreCase)
++     || h.Contains("heur", StringComparison.OrdinalIgnoreCase)
++     || h.Contains("hr", StringComparison.OrdinalIgnoreCase);
++
+     public static ImportResult Apply(SiteProject p, List<string[]> rows, int headerRow, ImportMapping m)
+     {
+         var res = new ImportResult();
+         if (m.DateCol < 0 || m.VolumeCol < 0) { res.Warnings.Add("Date and volume columns are required."); return res; }
++        // Hours detection must also work when the column was mapped by hand in the UI dialog
++        // (GuessMapping never ran), so sniff the actual header row, not just the flag.
++        var runtimeHeader = m.MinutesCol >= 0 && headerRow >= 0 && headerRow < rows.Count
++                            && m.MinutesCol < rows[headerRow].Length ? rows[headerRow][m.MinutesCol] : "";
++        var inHours = m.MinutesAreHours || HeaderSaysHours(runtimeHeader);
++        if (inHours && m.MinutesCol >= 0)
++            res.Warnings.Add($"Column '{runtimeHeader}' is in hours; values were converted ×60 to minutes.");
+         for (int i = headerRow + 1; i < rows.Count; i++)
+         {
+             var r = rows[i];
+             string Cell(int c) => c >= 0 && c < r.Length ? r[c] : "";
+             if (!TryDate(Cell(m.DateCol), out var date)) { if (r.Any(x => x.Length > 0)) res.Warnings.Add($"Row {i + 1}: bad date '{Cell(m.DateCol)}'"); continue; }
+-            if (!double.TryParse(Cell(m.VolumeCol).Replace(",", ""), NumberStyles.Any, CultureInfo.InvariantCulture, out var vol))
++            if (!TryParseDecimal(Cell(m.VolumeCol), out var vol))
+             { res.Warnings.Add($"Row {i + 1}: bad volume '{Cell(m.VolumeCol)}'"); continue; }
+ 
+             var name = m.SourceCol >= 0 ? Cell(m.SourceCol) : "";
+@@ -121,7 +167,8 @@ public static class SpreadsheetImporter
+                 else { res.Warnings.Add($"Row {i + 1}: unknown source '{name}'"); continue; }
+             }
+             double? mins = null;
+-            if (m.MinutesCol >= 0 && double.TryParse(Cell(m.MinutesCol), NumberStyles.Any, CultureInfo.InvariantCulture, out var mm)) mins = mm;
++            if (m.MinutesCol >= 0 && TryParseDecimal(Cell(m.MinutesCol), out var mm))
++                mins = inHours ? mm * 60 : mm;
+             p.Takings.Add(new TakingRecord { Date = date, SourceId = src.Id, Litres = ToLitres(vol, m.Unit), PumpingMinutes = mins });
+             res.Imported++;
+         }
+diff --git a/tests/WaterMgmt.Tests/CoreTests.cs b/tests/WaterMgmt.Tests/CoreTests.cs
+index c85d08e..9d52815 100644
+--- a/tests/WaterMgmt.Tests/CoreTests.cs
++++ b/tests/WaterMgmt.Tests/CoreTests.cs
+@@ -52,6 +52,68 @@ public class CoreTests
+         Assert.Equal(FeatureKind.Pit, q.Features[0].Kind);
+         Assert.Contains("Pit 1 Pump", ReportBuilder.Html(q, null));
+     }
++
++    [Fact]
++    public void Import_HoursColumn_ConvertedToMinutes()
++    {
++        var p = Site();
++        var csv = "Date,Pump,Volume (L),Hours\n2026-05-01,Pit 1 Pump,2000,2\n";
++        var rows = SpreadsheetImporter.ReadCsv(csv);
++        var m = SpreadsheetImporter.GuessMapping(rows[0]);
++        Assert.True(m.MinutesAreHours);
++        var r = SpreadsheetImporter.Apply(p, rows, 0, m);
++        Assert.Equal(1, r.Imported);
++        Assert.Equal(120, p.Takings[0].PumpingMinutes);            // 2 h = 120 min
++        // observed rate = 2000 L / 120 min = 16.7 L/min -> under the 100 limit
++        Assert.DoesNotContain(ComplianceChecker.Check(p), e => e.Rule == "Max litres/min");
++    }
++
++    [Fact]
++    public void Import_FrenchAndMixedDecimalFormats_Parse()
++    {
++        var p = Site();
++        var csv = "Date,Pump,Volume (L)\n" +
++                  "2026-05-01,Pit 1 Pump,\"1 234,5\"\n" +          // fr-CA nbsp thousands + decimal comma
++                  "2026-05-02,Pit 1 Pump,\"1,234.56\"\n" +         // en-US thousands + decimal point
++                  "2026-05-03,Pit 1 Pump,\"0,5\"\n" +              // bare decimal comma (was 10x error before)
++                  "2026-05-04,Pit 1 Pump,\"1.234,56\"\n";          // European mixed (fr Excel export)
++        var rows = SpreadsheetImporter.ReadCsv(csv);
++        var r = SpreadsheetImporter.Apply(p, rows, 0, SpreadsheetImporter.GuessMapping(rows[0]));
++        Assert.Equal(4, r.Imported);
++        Assert.Empty(r.Warnings);
++        Assert.Equal(1234.5, p.Takings[0].Litres, 5);
++        Assert.Equal(1234.56, p.Takings[1].Litres, 5);
++        Assert.Equal(0.5, p.Takings[2].Litres, 5);
++        Assert.Equal(1234.56, p.Takings[3].Litres, 5);
++    }
++
++    [Fact]
++    public void Import_FrenchDecimalHours_ConvertedToMinutes()
++    {
++        var p = Site();
++        var csv = "Date,Pump,Volume (L),Heures\n2026-05-01,Pit 1 Pump,\"2 000\",\"1,5\"\n";
++        var rows = SpreadsheetImporter.ReadCsv(csv);
++        var m = SpreadsheetImporter.GuessMapping(rows[0]);
++        Assert.True(m.MinutesAreHours);
++        SpreadsheetImporter.Apply(p, rows, 0, m);
++        Assert.Equal(90, p.Takings[0].PumpingMinutes);             // 1,5 h = 90 min
++        Assert.Equal(2000, p.Takings[0].Litres);
++    }
++
++    [Fact]
++    public void Import_ManuallyMappedHoursColumn_StillConverted()
++    {
++        var p = Site();
++        var csv = "Date,Pump,Volume (L),Run hrs\n2026-05-01,Pit 1 Pump,2000,2\n";
++        var rows = SpreadsheetImporter.ReadCsv(csv);
++        // Mapped by hand in the UI dialog: MinutesAreHours was never set by GuessMapping,
++        // so Apply must detect it from the header text itself.
++        var m = new ImportMapping { DateCol = 0, SourceCol = 1, VolumeCol = 2, MinutesCol = 3 };
++        var r = SpreadsheetImporter.Apply(p, rows, 0, m);
++        Assert.Equal(1, r.Imported);
++        Assert.Equal(120, p.Takings[0].PumpingMinutes);            // 2 h = 120 min, not 2 min
++        Assert.Contains(r.Warnings, w => w.Contains("converted"));
++    }
+ }
+ 
+ public class MassBalanceTests
+-- 
+2.47.3
+
