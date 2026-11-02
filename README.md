@@ -27,3 +27,7 @@ Sites are saved as `.wsite` (JSON) files. Schema versioning migrates older saves
     dotnet test
     dotnet run --project src/WaterMgmt.App
     dotnet publish src/WaterMgmt.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
+
+## Windows build
+`WaterManagement.exe` (GUI) and `water.exe` (CLI) are self-contained single files: no .NET install needed.
+The `Windows build` GitHub Action tests and publishes both on every push (download from the run's Artifacts).

@@ -1,0 +1,23 @@
+name: Windows build
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 8.0.x }
+      - run: dotnet test tests/WaterMgmt.Tests
+      - run: >
+          dotnet publish src/WaterMgmt.App -c Release -r win-x64 --self-contained
+          -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o dist
+      - run: >
+          dotnet publish src/WaterMgmt.Cli -c Release -r win-x64 --self-contained
+          -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QuarryWaterManagement-win-x64
+          path: dist/*.exe
