@@ -22,6 +22,9 @@ public static class ProjectStorage
     {
         var node = JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject();
 
+        if (node["SchemaVersion"]?.GetValue<int>() is { } ver && ver > SiteProject.CurrentSchemaVersion)
+            throw new InvalidDataException($"This site file was saved by a newer version of the app (format {ver}; this build reads up to {SiteProject.CurrentSchemaVersion}). Update the app before opening it, otherwise saving would lose data.");
+
         // v1 -> v2 (structural part): the single "Permit" object becomes the only
         // entry of the "Permits" list. Must happen at the JSON level — a typed
         // SiteProject has no Permits property to receive the old data.

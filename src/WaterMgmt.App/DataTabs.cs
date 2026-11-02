@@ -154,8 +154,10 @@ public partial class MainWindow
     readonly ComboBox mUnit = new() { ItemsSource = Enum.GetValues<VolumeUnit>(), SelectedIndex = 0 };
     readonly CheckBox mCreate = new() { Content = "Create unknown sources as new permit sources" };
     readonly Button undoImportBtn = new() { Content = "Undo last import", IsEnabled = false, Padding = new Thickness(8, 4) };
-    int importTakingsMark = -1;
-    List<PermitSource> beforeImportSources = new();
+    // Undo works by object identity and is tied to the project it ran against, so manual edits
+    // made after the import, or opening another site, can never make it remove the wrong rows.
+    SiteProject? lastImportProject;
+    ImportResult? lastImport;
 
     Control BuildImportTab()
     {
@@ -207,30 +209,31 @@ public partial class MainWindow
             MinutesCol = mMin.SelectedIndex - 1, Unit = (VolumeUnit)(mUnit.SelectedItem ?? VolumeUnit.Litres),
             CreateMissingSources = mCreate.IsChecked == true
         };
-        // snapshot for session-scoped undo (imports only ever append)
-        importTakingsMark = project.Takings.Count;
-        beforeImportSources = project.Permits.SelectMany(x => x.Sources).ToList();
         var r = SpreadsheetImporter.Apply(project, importRows, HeaderIdx, m);
+        lastImport = r; lastImportProject = project;
         importLog.Text = $"Imported {r.Imported} rows.\n" +
             (r.CreatedSources.Count > 0 ? "Created sources: " + string.Join(", ", r.CreatedSources.Distinct()) + "\n" : "") +
             string.Join("\n", r.Warnings.Take(200));
         SetStatus($"Imported {r.Imported} takings; {r.Warnings.Count} warnings.");
-        undoImportBtn.IsEnabled = r.Imported > 0;
+        UpdateUndoButton();
     }
 
     void UndoImport()
     {
-        if (importTakingsMark < 0) return;
-        if (project.Takings.Count > importTakingsMark)
-            project.Takings.RemoveRange(importTakingsMark, project.Takings.Count - importTakingsMark);
-        foreach (var pt in project.Permits)   // drop sources the import created
-            pt.Sources.RemoveAll(s => !beforeImportSources.Contains(s));
-        importTakingsMark = -1;
-        undoImportBtn.IsEnabled = false;
+        if (lastImport == null || !ReferenceEquals(lastImportProject, project)) { UpdateUndoButton(); return; }
+        var added = lastImport.AddedTakings.ToHashSet();
+        project.Takings.RemoveAll(added.Contains);   // reference equality: only rows this import added
+        foreach (var src in lastImport.AddedSources)  // sources it created, if nothing else uses them now
+            if (!project.Takings.Any(t => t.SourceId == src.Id))
+                foreach (var pt in project.Permits) pt.Sources.Remove(src);
+        lastImport = null; lastImportProject = null;
         importLog.Text = "Last import undone.";
         SetStatus("Import undone.");
         RefreshPermit();
     }
+
+    void UpdateUndoButton() =>
+        undoImportBtn.IsEnabled = lastImport is { AddedTakings.Count: > 0 } && ReferenceEquals(lastImportProject, project);
 
     // ---------- Compliance & reports ----------
     readonly DataGrid sumGrid = new() { AutoGenerateColumns = false, IsReadOnly = true, Height = 200 };

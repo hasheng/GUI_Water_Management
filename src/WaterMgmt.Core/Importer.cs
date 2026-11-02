@@ -22,6 +22,9 @@ public class ImportResult
     public int Imported { get; set; }
     public List<string> Warnings { get; } = new();
     public List<string> CreatedSources { get; } = new();
+    /// <summary>The exact records and sources this import appended, so it can be undone by identity.</summary>
+    public List<TakingRecord> AddedTakings { get; } = new();
+    public List<PermitSource> AddedSources { get; } = new();
 }
 
 /// <summary>Reads messy client spreadsheets (xlsx/csv) into raw rows, then maps them to takings.</summary>
@@ -41,8 +44,13 @@ public static class SpreadsheetImporter
         var rows = new List<string[]>();
         if (range == null) return rows;
         foreach (var r in range.Rows())
-            rows.Add(r.Cells().Select(c => c.DataType == XLDataType.DateTime
-                ? c.GetDateTime().ToString("yyyy-MM-dd") : c.GetFormattedString().Trim()).ToArray());
+            rows.Add(r.Cells().Select(c => c.DataType switch
+            {
+                XLDataType.DateTime => c.GetDateTime().ToString("yyyy-MM-dd"),
+                // real value, not the displayed text: a cell showing "0" for 0.4 must import as 0.4
+                XLDataType.Number => c.GetDouble().ToString("R", CultureInfo.InvariantCulture),
+                _ => c.GetFormattedString().Trim()
+            }).ToArray());
         return rows;
     }
 
@@ -109,9 +117,15 @@ public static class SpreadsheetImporter
     /// A trailing comma followed by 1-2 digits is a decimal comma; otherwise a
     /// lone comma is treated as a thousands separator ("1,234" -> 1234).
     /// </summary>
-    public static bool TryParseDecimal(string? s, out double v)
+    public static bool TryParseDecimal(string? s, out double v) => TryParseDecimal(s, out v, out _, null);
+
+    /// <param name="ambiguous">Set when a lone comma + exactly three digits could be a thousands
+    /// separator or a decimal comma ("1,234": 1234 or 1.234) and nothing settled it.</param>
+    /// <param name="decimalComma">The column's convention if known: true = comma is the decimal
+    /// mark, false = comma is thousands, null = unknown (reads as thousands and sets ambiguous).</param>
+    public static bool TryParseDecimal(string? s, out double v, out bool ambiguous, bool? decimalComma)
     {
-        v = 0;
+        v = 0; ambiguous = false;
         if (string.IsNullOrWhiteSpace(s)) return false;
         s = s.Trim().Replace("\u00A0", "").Replace("\u202F", "").Replace(" ", "").Replace("'", "");
         bool hasComma = s.Contains(','), hasDot = s.Contains('.');
@@ -124,10 +138,35 @@ public static class SpreadsheetImporter
         }
         else if (hasComma)
         {
-            var tail = s.Length - s.LastIndexOf(',') - 1;
-            norm = tail is 1 or 2 ? s.Replace(',', '.') : s.Replace(",", "");
+            int idx = s.LastIndexOf(',');
+            var tail = s.Length - idx - 1;
+            bool lone = s.IndexOf(',') == idx;
+            if (tail is 1 or 2) norm = s.Replace(',', '.');
+            else if (tail == 3 && lone)
+            {
+                var intPart = s[..idx].TrimStart('-', '+');
+                if (intPart.StartsWith('0') || intPart.Length > 3) norm = s.Replace(',', '.');   // 0,125 / 1234,567 can only be decimals
+                else if (decimalComma == true) norm = s.Replace(',', '.');
+                else { norm = s.Replace(",", ""); ambiguous = decimalComma == null; }
+            }
+            else norm = s.Replace(",", "");
         }
         return double.TryParse(norm, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    }
+
+    /// <summary>Infer a column's decimal convention from its unambiguous cells; null if no evidence or mixed.</summary>
+    public static bool? InferDecimalComma(IEnumerable<string> cells)
+    {
+        bool fr = false, en = false;
+        foreach (var raw in cells)
+        {
+            var c = raw.Trim().Replace("\u00A0", "").Replace("\u202F", "").Replace(" ", "");
+            bool comma = c.Contains(','), dot = c.Contains('.');
+            if (comma && dot) { if (c.LastIndexOf(',') > c.LastIndexOf('.')) fr = true; else en = true; }
+            else if (dot && c.IndexOf('.') == c.LastIndexOf('.')) en = true;
+            else if (comma && c.IndexOf(',') == c.LastIndexOf(',') && c.Length - c.LastIndexOf(',') - 1 is 1 or 2) fr = true;
+        }
+        return fr == en ? null : fr;
     }
 
     /// <summary>Header text indicates a runtime column expressed in hours (en/fr, incl. "hrs").</summary>
@@ -147,14 +186,21 @@ public static class SpreadsheetImporter
         var inHours = m.MinutesAreHours || HeaderSaysHours(runtimeHeader);
         if (inHours && m.MinutesCol >= 0)
             res.Warnings.Add($"Column '{runtimeHeader}' is in hours; values were converted ×60 to minutes.");
+        var body = rows.Skip(headerRow + 1).ToList();
+        string[] Col(int c) => c < 0 ? Array.Empty<string>() : body.Select(r => c < r.Length ? r[c] : "").ToArray();
+        var volComma = InferDecimalComma(Col(m.VolumeCol));
+        var minComma = InferDecimalComma(Col(m.MinutesCol));
+        if (volComma == true) res.Warnings.Add("Volume column uses decimal commas (e.g. 0,5); '1,234' was read as 1.234.");
         var dayTotals = new Dictionary<(DateTime Date, Guid Src), double>();
         for (int i = headerRow + 1; i < rows.Count; i++)
         {
             var r = rows[i];
             string Cell(int c) => c >= 0 && c < r.Length ? r[c] : "";
             if (!TryDate(Cell(m.DateCol), out var date)) { if (r.Any(x => x.Length > 0)) res.Warnings.Add($"Row {i + 1}: bad date '{Cell(m.DateCol)}'"); continue; }
-            if (!TryParseDecimal(Cell(m.VolumeCol), out var vol))
+            if (!TryParseDecimal(Cell(m.VolumeCol), out var vol, out var volAmb, volComma))
             { res.Warnings.Add($"Row {i + 1}: bad volume '{Cell(m.VolumeCol)}'"); continue; }
+            if (volAmb)
+                res.Warnings.Add($"Row {i + 1}: volume '{Cell(m.VolumeCol)}' is ambiguous (1,234 or 1.234?); read as {vol:N0}. Check the sheet's number format.");
 
             var name = m.SourceCol >= 0 ? Cell(m.SourceCol) : "";
             var src = p.Permits.SelectMany(pt => pt.Sources).FirstOrDefault(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
@@ -163,13 +209,16 @@ public static class SpreadsheetImporter
                 if (m.CreateMissingSources && name.Length > 0)
                 {
                     src = new PermitSource { Name = name };
-                    p.PrimaryPermit.Sources.Add(src); res.CreatedSources.Add(name);
+                    p.PrimaryPermit.Sources.Add(src); res.CreatedSources.Add(name); res.AddedSources.Add(src);
                 }
                 else { res.Warnings.Add($"Row {i + 1}: unknown source '{name}'"); continue; }
             }
             double? mins = null;
-            if (m.MinutesCol >= 0 && TryParseDecimal(Cell(m.MinutesCol), out var mm))
+            if (m.MinutesCol >= 0 && TryParseDecimal(Cell(m.MinutesCol), out var mm, out var minAmb, minComma))
+            {
                 mins = inHours ? mm * 60 : mm;
+                if (minAmb) res.Warnings.Add($"Row {i + 1}: runtime '{Cell(m.MinutesCol)}' is ambiguous (1,234 or 1.234?); read as {mm:N0}.");
+            }
             var litres = ToLitres(vol, m.Unit);
             // Sanity checks: warn at import time so bad sheets get fixed before they
             // reach a report. Rows are still imported; Compliance reports the verdict.
@@ -178,7 +227,8 @@ public static class SpreadsheetImporter
             if (mins is { } m2 && m2 > 0 && src.MaxLitresPerMinute is { } lpm && litres / m2 > lpm)
                 res.Warnings.Add($"Row {i + 1}: implied rate {litres / m2:N0} L/min exceeds the permit max of {lpm:N0} L/min.");
             dayTotals[(date.Date, src.Id)] = dayTotals.GetValueOrDefault((date.Date, src.Id)) + litres;
-            p.Takings.Add(new TakingRecord { Date = date, SourceId = src.Id, Litres = litres, PumpingMinutes = mins });
+            var rec = new TakingRecord { Date = date, SourceId = src.Id, Litres = litres, PumpingMinutes = mins };
+            p.Takings.Add(rec); res.AddedTakings.Add(rec);
             res.Imported++;
         }
         foreach (var ((date, srcId), total) in dayTotals)
@@ -193,7 +243,7 @@ public static class SpreadsheetImporter
     static bool TryDate(string s, out DateTime d)
     {
         if (DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out d)) return true;
-        if (double.TryParse(s, out var oa) && oa > 20000 && oa < 80000) { d = DateTime.FromOADate(oa); return true; }
+        if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var oa) && oa > 20000 && oa < 80000) { d = DateTime.FromOADate(oa); return true; }
         return false;
     }
 }

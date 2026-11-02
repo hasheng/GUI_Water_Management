@@ -34,10 +34,19 @@ public static class ComplianceChecker
                     res.Add(new(d.Date, src.Name, "Taking after permit expiry", d.Litres, 0));
             }
             if (src.MaxDaysPerYear is { } maxDays)
-                foreach (var y in daily.Where(d => d.Litres > 0)
-                             .GroupBy(d => PermitYearEnd(d.Date, ownPt.PermitYearStartMonth)))
+            {
+                // Permit years can straddle calendar years, so count over ALL of the source's
+                // records and keep a permit year if it overlaps the requested calendar year.
+                var allDays = p.Takings.Where(r => r.SourceId == src.Id)
+                    .GroupBy(r => r.Date.Date).Where(g => g.Sum(x => x.Litres) > 0).Select(g => g.Key);
+                foreach (var y in allDays.GroupBy(d => PermitYearEnd(d, ownPt.PermitYearStartMonth)))
+                {
+                    var end = y.Key; var start = end.AddYears(-1).AddDays(1);
+                    if (year != null && (year < start.Year || year > end.Year)) continue;
                     if (y.Count() > maxDays)
-                        res.Add(new(y.Key, src.Name, "Max days/year", y.Count(), maxDays));
+                        res.Add(new(end, src.Name, "Max days/year", y.Count(), maxDays));
+                }
+            }
         }
         // takings recorded against an unknown source
         var known = owner.Keys.Select(s => s.Id).ToHashSet();

@@ -58,7 +58,7 @@ public partial class MainWindow : Window
     void RefreshAll()
     {
         Title = $"Quarry Water Management – {project.SiteName}{(projectPath == null ? "" : " (" + Path.GetFileName(projectPath) + ")")}";
-        RefreshMap(); RefreshFeatures(); RefreshPermit(); RefreshBalance(); RefreshReport();
+        UpdateUndoButton(); RefreshMap(); RefreshFeatures(); RefreshPermit(); RefreshBalance(); RefreshReport();
     }
 
     void SetStatus(string s) => status.Text = s;
