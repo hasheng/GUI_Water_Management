@@ -17,7 +17,7 @@ Sites are saved as `.wsite` (JSON) files. Schema versioning migrates older saves
     dotnet run --project src/WaterMgmt.Cli -- <command>
 
     water new <project.wsite>                                  create an empty project
-    water check <project.wsite> [year]                         notices + exceedances (exit 2 if any)
+    water check <project.wsite> [year]                         exceedances (exit 2 if any)
     water report <project.wsite> [--year N] [--out f.html]     full HTML report
     water mecp <project.wsite> [--year N] [--csv] [--out f]    annual report
     water import <sheet> <project.wsite> [--header N]          auto-mapped import

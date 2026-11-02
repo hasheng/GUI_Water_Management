@@ -5,9 +5,6 @@ public record Exceedance(DateTime Date, string Source, string Rule, double Actua
 public record SourceSummary(string Source, double TotalLitres, int DaysTaking, double MaxDayLitres,
     double? MaxLpm, double? LimitLpd, double? LimitLpm, int? LimitDays);
 
-/// <summary>An upcoming (or passed) permit deadline, surfaced before it becomes an exceedance.</summary>
-public record PermitNotice(string Severity, int Days, string Message);
-
 public static class ComplianceChecker
 {
     public static List<Exceedance> Check(SiteProject p, int? year = null)
@@ -78,32 +75,6 @@ public static class ComplianceChecker
             foreach (var s in pt.Sources)
                 owner[s] = pt;
         return owner;
-    }
-
-    /// <summary>
-    /// Deadline warnings for every permit on the site: expired, critical (30 days or
-    /// less), warning (90 days or less). Renewals take months, so this is surfaced
-    /// well before any taking-after-expiry exceedance can happen.
-    /// </summary>
-    public static List<PermitNotice> GetPermitNotices(SiteProject p, DateTime? asOf = null)
-    {
-        var res = new List<PermitNotice>();
-        var today = (asOf ?? DateTime.Today).Date;
-        foreach (var pt in p.Permits)
-        {
-            if (pt.Expires is not { } exp) continue;
-            var days = (int)(exp.Date - today).TotalDays;
-            if (days < 0)
-                res.Add(new PermitNotice("expired", days,
-                    $"Permit {pt.Number} EXPIRED {-days:N0} days ago ({exp.Date:yyyy-MM-dd})."));
-            else if (days <= 30)
-                res.Add(new PermitNotice("critical", days,
-                    $"Permit {pt.Number} expires in {days} days ({exp.Date:yyyy-MM-dd})."));
-            else if (days <= 90)
-                res.Add(new PermitNotice("warning", days,
-                    $"Permit {pt.Number} expires in {days} days ({exp.Date:yyyy-MM-dd})."));
-        }
-        return res;
     }
 
     public static List<SourceSummary> Summarize(SiteProject p, int? year = null)

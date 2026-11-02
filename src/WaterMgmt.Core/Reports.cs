@@ -17,11 +17,6 @@ public static class ReportBuilder
             "th{background:#e8eef4}td:first-child,th:first-child{text-align:left}.bad{color:#b00020;font-weight:bold}.warn{color:#8a6d00;font-weight:bold}</style></head><body>");
         sb.Append($"<h1>Water Taking Summary – {E(p.SiteName)}</h1>");
         sb.Append("<p>" + string.Join(" · ", p.Permits.Select(pt => $"PTTW {E(pt.Number)} · Holder: {E(pt.Holder)} · Expires: {E(pt.Expires?.ToString("yyyy-MM-dd"))}")) + $" · Period: {(year?.ToString() ?? "all")}</p>");
-        foreach (var n in ComplianceChecker.GetPermitNotices(p))
-        {
-            var color = n.Severity is "expired" or "critical" ? "#b00020" : "#8a6d00";
-            sb.Append($"<p style='margin:8px 0;padding:6px 10px;font-weight:bold;color:{color};background:#fff8e1;border:1px solid #e0c868'>{E(n.Message)}</p>");
-        }
         sb.Append("<h2>Takings by source</h2><table><tr><th>Source</th><th>Total (L)</th><th>Days</th><th>Max day (L)</th><th>Limit L/day</th><th>Max L/min</th><th>Limit L/min</th><th>Limit days/yr</th></tr>");
         foreach (var s in sum)
             sb.Append($"<tr><td>{E(s.Source)}</td><td>{N(s.TotalLitres)}</td><td>{s.DaysTaking}</td><td>{N(s.MaxDayLitres)}</td><td>{N(s.LimitLpd)}</td><td>{N(s.MaxLpm)}</td><td>{N(s.LimitLpm)}</td><td>{s.LimitDays?.ToString() ?? "—"}</td></tr>");
@@ -100,11 +95,6 @@ public static class ReportBuilder
         {
             sb.Append($"<h2>PTTW {E(pt.Number)}</h2>");
             sb.Append($"<p>Holder: {E(pt.Holder)} · Issued: {E(pt.Issued?.ToString("yyyy-MM-dd"))} · Expires: {E(pt.Expires?.ToString("yyyy-MM-dd"))}</p>");
-            foreach (var n in ComplianceChecker.GetPermitNotices(p))
-            {
-                var color = n.Severity is "expired" or "critical" ? "#b00020" : "#8a6d00";
-                sb.Append($"<p style='margin:8px 0;padding:6px 10px;font-weight:bold;color:{color};background:#fff8e1;border:1px solid #e0c868'>{E(n.Message)}</p>");
-            }
             var byId = pt.Sources.ToDictionary(s => s.Id);
             sb.Append("<table><tr><th>Source</th>");
             foreach (var mn in MonNames) sb.Append($"<th>{mn} (m³)</th>");

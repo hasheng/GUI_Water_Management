@@ -5,7 +5,7 @@ using WaterMgmt.Core;
 //   water new <project.wsite>
 //       Create an empty project with one permit and one source.
 //   water check <project.wsite> [year]
-//       Print permit notices and compliance exceedances.
+//       Print compliance exceedances.
 //       Exit code 2 when exceedances exist (CI/cron friendly).
 //   water report <project.wsite> [--year N] [--out file.html]
 //       Full HTML report to stdout or a file.
@@ -56,8 +56,6 @@ static int CmdCheck(string[] a)
     if (a.Length < 1) return Usage();
     var p = ProjectStorage.Load(a[0]);
     int? year = a.Length > 1 && int.TryParse(a[1], out var y) ? y : null;
-    foreach (var n in ComplianceChecker.GetPermitNotices(p))
-        Console.WriteLine($"[{n.Severity.ToUpperInvariant()}] {n.Message}");
     var ex = ComplianceChecker.Check(p, year);
     foreach (var e in ex)
         Console.WriteLine($"[{e.Date:yyyy-MM-dd}] {e.Source}: {e.Rule} — {e.Actual:N0} vs limit {e.Limit:N0}");

@@ -136,23 +136,6 @@ public class CoreTests
     }
 
     [Fact]
-    public void PermitNotices_WarnAt90_30_AndExpiry()
-    {
-        var p = Site();                                            // Expires 2026-12-31
-        Assert.Empty(ComplianceChecker.GetPermitNotices(p, new DateTime(2026, 1, 1)));
-        Assert.Contains(ComplianceChecker.GetPermitNotices(p, new DateTime(2026, 10, 2)),
-            n => n.Severity == "warning" && n.Days == 90);
-        Assert.Contains(ComplianceChecker.GetPermitNotices(p, new DateTime(2026, 12, 1)),
-            n => n.Severity == "critical" && n.Days == 30);
-        Assert.Contains(ComplianceChecker.GetPermitNotices(p, new DateTime(2027, 1, 10)),
-            n => n.Severity == "expired" && n.Days == -10);
-        // the HTML report surfaces notices (30 days out -> deterministic message)
-        var soon = Site();
-        soon.Permits[0].Expires = DateTime.Today.AddDays(30);
-        Assert.Contains("expires in 30 days", ReportBuilder.Html(soon, null));
-    }
-
-    [Fact]
     public void Load_FileWithoutSchemaVersion_MigratesToV1()
     {
         var p = Site();
@@ -352,9 +335,6 @@ public class MultiPermitTests
         var ex = ComplianceChecker.Check(p);
         Assert.Contains(ex, e => e.Rule.StartsWith("Taking after permit expiry") && e.Source == "Pit A");
         Assert.DoesNotContain(ex, e => e.Source == "Well B");
-        var notices = ComplianceChecker.GetPermitNotices(p, new DateTime(2026, 7, 1));
-        Assert.Contains(notices, n => n.Message.Contains("Permit A EXPIRED"));
-        Assert.DoesNotContain(notices, n => n.Message.Contains("Permit B EXPIRED")); // 364 days out
         Assert.Equal(2, ComplianceChecker.Summarize(p).Count);      // sources of both permits
     }
 
