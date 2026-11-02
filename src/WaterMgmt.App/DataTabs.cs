@@ -49,19 +49,24 @@ public partial class MainWindow
     }
 
     // ---------- Permit & takings ----------
-    readonly TextBox siteName = new() { Width = 220 }, permitNo = new() { Width = 160 }, holder = new() { Width = 220 };
+    readonly TextBox siteName = new() { Width = 220 }, permitNo = new() { Width = 160 }, holder = new() { Width = 220 }, yearStart = new() { Width = 40, Watermark = "1-12" };
     readonly DatePicker issued = new(), expires = new();
+    readonly ComboBox permitBox = new() { MinWidth = 160 };
     readonly DataGrid srcGrid = new() { AutoGenerateColumns = false, Height = 180 };
     readonly DataGrid takeGrid = new() { AutoGenerateColumns = false, IsReadOnly = true };
     readonly ComboBox takeSrc = new() { MinWidth = 180 };
     readonly DatePicker takeDate = new();
     readonly TextBox takeL = new() { Width = 100, Watermark = "Litres" }, takeMin = new() { Width = 90, Watermark = "Minutes" };
     bool loadingPermit;
+    List<PermitSource> allSources = new();          // combined across permits; index maps takeSrc
+
+    Permit SelectedPermit => permitBox.SelectedItem as Permit ?? project.PrimaryPermit;
 
     Control BuildPermitTab()
     {
-        siteName.LostFocus += (_, _) => SavePermitFields(); permitNo.LostFocus += (_, _) => SavePermitFields(); holder.LostFocus += (_, _) => SavePermitFields();
+        siteName.LostFocus += (_, _) => SavePermitFields(); permitNo.LostFocus += (_, _) => SavePermitFields(); holder.LostFocus += (_, _) => SavePermitFields(); yearStart.LostFocus += (_, _) => SavePermitFields();
         issued.SelectedDateChanged += (_, _) => SavePermitFields(); expires.SelectedDateChanged += (_, _) => SavePermitFields();
+        permitBox.SelectionChanged += (_, _) => RefreshPermit();
         srcGrid.Columns.Add(Col("Source (pump / well / pit)", "Name", false, 220));
         srcGrid.Columns.Add(Col("Max L/min", "MaxLitresPerMinute"));
         srcGrid.Columns.Add(Col("Max L/day", "MaxLitresPerDay"));
@@ -70,11 +75,12 @@ public partial class MainWindow
         takeGrid.Columns.Add(Col("Litres", "Litres")); takeGrid.Columns.Add(Col("Minutes", "Minutes"));
         var p = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
         p.Children.Add(Row(Lbl("Site"), siteName, Lbl("PTTW #"), permitNo, Lbl("Holder"), holder));
-        p.Children.Add(Row(Lbl("Issued"), issued, Lbl("Expires"), expires));
-        p.Children.Add(new TextBlock { Text = "Permitted sources and limits (Ontario PTTW)", FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 0) });
+        p.Children.Add(Row(Lbl("Permit"), permitBox, Btn("Add permit", AddPermit), Btn("Remove this permit", RemovePermit)));
+        p.Children.Add(Row(Lbl("Issued"), issued, Lbl("Expires"), expires, Lbl("Permit yr starts (month)"), yearStart));
+        p.Children.Add(new TextBlock { Text = "Permitted sources and limits for the selected PTTW", FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 0) });
         p.Children.Add(srcGrid);
-        p.Children.Add(Row(Btn("Add source", () => { project.Permit.Sources.Add(new PermitSource { Name = "New source" }); RefreshPermit(); }),
-            Btn("Remove selected source", () => { if (srcGrid.SelectedItem is PermitSource s) { project.Permit.Sources.Remove(s); RefreshPermit(); } })));
+        p.Children.Add(Row(Btn("Add source", () => { SelectedPermit.Sources.Add(new PermitSource { Name = "New source" }); RefreshPermit(); }),
+            Btn("Remove selected source", () => { if (srcGrid.SelectedItem is PermitSource s) { SelectedPermit.Sources.Remove(s); RefreshPermit(); } })));
         p.Children.Add(new TextBlock { Text = "Daily takings", FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 0) });
         p.Children.Add(Row(takeDate, takeSrc, takeL, takeMin, Btn("Add taking", AddTaking),
             Btn("Delete selected", () => { if (takeGrid.SelectedItem is TakingRow r) { project.Takings.Remove(r.Rec); RefreshPermit(); } })));
@@ -86,17 +92,36 @@ public partial class MainWindow
     void SavePermitFields()
     {
         if (loadingPermit) return;
-        project.SiteName = siteName.Text ?? ""; project.Permit.Number = permitNo.Text ?? ""; project.Permit.Holder = holder.Text ?? "";
-        project.Permit.Issued = issued.SelectedDate?.DateTime; project.Permit.Expires = expires.SelectedDate?.DateTime;
+        project.SiteName = siteName.Text ?? "";
+        var pt = SelectedPermit;
+        pt.Number = permitNo.Text ?? ""; pt.Holder = holder.Text ?? "";
+        pt.Issued = issued.SelectedDate?.DateTime; pt.Expires = expires.SelectedDate?.DateTime;
+        pt.PermitYearStartMonth = int.TryParse(yearStart.Text, out var m) && m is >= 1 and <= 12 ? m : 1;
+    }
+
+    void AddPermit()
+    {
+        project.Permits.Add(new Permit { Number = $"New permit {project.Permits.Count + 1}" });
+        permitBox.SelectedItem = project.Permits[^1];
+        RefreshPermit();
+    }
+
+    void RemovePermit()
+    {
+        if (project.Permits.Count > 1 && permitBox.SelectedItem is Permit del)
+            project.Permits.Remove(del);
+        else
+            SetStatus("A site needs at least one permit.");
+        RefreshPermit();
     }
 
     void AddTaking()
     {
         var i = takeSrc.SelectedIndex;
-        if (i < 0 || takeDate.SelectedDate == null || !double.TryParse(takeL.Text, out var l)) { SetStatus("Pick a date, source, and litres."); return; }
+        if (i < 0 || i >= allSources.Count || takeDate.SelectedDate == null || !double.TryParse(takeL.Text, out var l)) { SetStatus("Pick a date, source, and litres."); return; }
         project.Takings.Add(new TakingRecord
         {
-            Date = takeDate.SelectedDate.Value.DateTime, SourceId = project.Permit.Sources[i].Id, Litres = l,
+            Date = takeDate.SelectedDate.Value.DateTime, SourceId = allSources[i].Id, Litres = l,
             PumpingMinutes = double.TryParse(takeMin.Text, out var m) ? m : null
         });
         RefreshPermit();
@@ -105,13 +130,19 @@ public partial class MainWindow
     void RefreshPermit()
     {
         loadingPermit = true;
-        siteName.Text = project.SiteName; permitNo.Text = project.Permit.Number; holder.Text = project.Permit.Holder;
-        issued.SelectedDate = project.Permit.Issued; expires.SelectedDate = project.Permit.Expires;
+        var prev = permitBox.SelectedItem as Permit ?? project.PrimaryPermit;
+        permitBox.ItemsSource = project.Permits.ToList();
+        permitBox.SelectedItem = project.Permits.Contains(prev) ? prev : project.PrimaryPermit;
+        var pt = SelectedPermit;
+        siteName.Text = project.SiteName; permitNo.Text = pt.Number; holder.Text = pt.Holder;
+        issued.SelectedDate = pt.Issued; expires.SelectedDate = pt.Expires;
+        yearStart.Text = pt.PermitYearStartMonth.ToString();
         loadingPermit = false;
-        srcGrid.ItemsSource = null; srcGrid.ItemsSource = project.Permit.Sources;
-        takeSrc.ItemsSource = project.Permit.Sources.Select(s => s.Name).ToList();
+        allSources = project.Permits.SelectMany(x => x.Sources).ToList();
+        srcGrid.ItemsSource = null; srcGrid.ItemsSource = pt.Sources;
+        takeSrc.ItemsSource = allSources.Select(s => s.Name).ToList();
         takeGrid.ItemsSource = project.Takings.OrderByDescending(t => t.Date).Take(1000)
-            .Select(t => new TakingRow(t, project.Permit.Sources.FirstOrDefault(s => s.Id == t.SourceId)?.Name ?? "(unknown)")).ToList();
+            .Select(t => new TakingRow(t, allSources.FirstOrDefault(s => s.Id == t.SourceId)?.Name ?? "(unknown)")).ToList();
     }
 
     // ---------- Import ----------
@@ -122,6 +153,9 @@ public partial class MainWindow
     readonly ComboBox mDate = new() { MinWidth = 140 }, mSrc = new() { MinWidth = 140 }, mVol = new() { MinWidth = 140 }, mMin = new() { MinWidth = 140 };
     readonly ComboBox mUnit = new() { ItemsSource = Enum.GetValues<VolumeUnit>(), SelectedIndex = 0 };
     readonly CheckBox mCreate = new() { Content = "Create unknown sources as new permit sources" };
+    readonly Button undoImportBtn = new() { Content = "Undo last import", IsEnabled = false, Padding = new Thickness(8, 4) };
+    int importTakingsMark = -1;
+    List<PermitSource> beforeImportSources = new();
 
     Control BuildImportTab()
     {
@@ -132,7 +166,7 @@ public partial class MainWindow
         p.Children.Add(importPreview);
         p.Children.Add(Row(Lbl("Date"), mDate, Lbl("Source"), mSrc, Lbl("Volume"), mVol, Lbl("Minutes (optional)"), mMin, Lbl("Unit"), mUnit));
         p.Children.Add(mCreate);
-        p.Children.Add(Row(Btn("Import takings", RunImport)));
+        p.Children.Add(Row(Btn("Import takings", RunImport), undoImportBtn));
         p.Children.Add(importLog);
         return new ScrollViewer { Content = p };
     }
@@ -173,11 +207,29 @@ public partial class MainWindow
             MinutesCol = mMin.SelectedIndex - 1, Unit = (VolumeUnit)(mUnit.SelectedItem ?? VolumeUnit.Litres),
             CreateMissingSources = mCreate.IsChecked == true
         };
+        // snapshot for session-scoped undo (imports only ever append)
+        importTakingsMark = project.Takings.Count;
+        beforeImportSources = project.Permits.SelectMany(x => x.Sources).ToList();
         var r = SpreadsheetImporter.Apply(project, importRows, HeaderIdx, m);
         importLog.Text = $"Imported {r.Imported} rows.\n" +
             (r.CreatedSources.Count > 0 ? "Created sources: " + string.Join(", ", r.CreatedSources.Distinct()) + "\n" : "") +
             string.Join("\n", r.Warnings.Take(200));
         SetStatus($"Imported {r.Imported} takings; {r.Warnings.Count} warnings.");
+        undoImportBtn.IsEnabled = r.Imported > 0;
+    }
+
+    void UndoImport()
+    {
+        if (importTakingsMark < 0) return;
+        if (project.Takings.Count > importTakingsMark)
+            project.Takings.RemoveRange(importTakingsMark, project.Takings.Count - importTakingsMark);
+        foreach (var pt in project.Permits)   // drop sources the import created
+            pt.Sources.RemoveAll(s => !beforeImportSources.Contains(s));
+        importTakingsMark = -1;
+        undoImportBtn.IsEnabled = false;
+        importLog.Text = "Last import undone.";
+        SetStatus("Import undone.");
+        RefreshPermit();
     }
 
     // ---------- Compliance & reports ----------
@@ -185,6 +237,7 @@ public partial class MainWindow
     readonly DataGrid excGrid = new() { AutoGenerateColumns = false, IsReadOnly = true };
     readonly ComboBox yearBox = new() { MinWidth = 100 };
     readonly TextBlock excHeader = new() { FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8) };
+    readonly StackPanel gaugePanel = new() { Margin = new Thickness(0, 6) };
     bool loadingYears;
 
     Control BuildReportTab()
@@ -197,8 +250,9 @@ public partial class MainWindow
         excGrid.Columns.Add(Col("Rule", "Rule", false, 260)); excGrid.Columns.Add(Col("Actual", "Actual")); excGrid.Columns.Add(Col("Limit", "Limit"));
         yearBox.SelectionChanged += (_, _) => { if (!loadingYears) RefreshReport(); };
         var p = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
-        p.Children.Add(Row(Lbl("Year"), yearBox, Btn("Export HTML report…", () => Export(true)), Btn("Export CSV summary…", () => Export(false))));
-        p.Children.Add(sumGrid); p.Children.Add(excHeader);
+        p.Children.Add(Row(Lbl("Year"), yearBox, Btn("Export HTML report…", () => Export(true)), Btn("Export CSV summary…", () => Export(false)),
+                           Btn("Export MECP annual (HTML)…", () => ExportMecp(true)), Btn("Export MECP annual (CSV)…", () => ExportMecp(false))));
+        p.Children.Add(sumGrid); p.Children.Add(gaugePanel); p.Children.Add(excHeader);
         var dock = new DockPanel();
         DockPanel.SetDock(p, Dock.Top); dock.Children.Add(p); dock.Children.Add(excGrid);
         return dock;
@@ -219,6 +273,35 @@ public partial class MainWindow
         excHeader.Text = exc.Count == 0 ? "No exceedances recorded." : $"{exc.Count} exceedance(s)";
         excHeader.Foreground = exc.Count == 0 ? Brushes.DarkGreen : Brushes.Firebrick;
         excGrid.ItemsSource = exc;
+        RefreshGauges();
+    }
+
+    /// <summary>Per-source usage bars: worst day vs the L/day limit and peak observed
+    /// rate vs the L/min limit, green below 80%, amber approaching, red over.</summary>
+    void RefreshGauges()
+    {
+        gaugePanel.Children.Clear();
+        foreach (var s in ComplianceChecker.Summarize(project, SelectedYear))
+        {
+            Gauge(s.Source, "worst day", s.MaxDayLitres, s.LimitLpd, "L/day");
+            if (s.MaxLpm != null) Gauge(s.Source, "peak rate", s.MaxLpm!.Value, s.LimitLpm, "L/min");
+        }
+
+        void Gauge(string src, string what, double actual, double? limit, string unit)
+        {
+            if (limit is not { } lim || lim <= 0) return;
+            var pct = Math.Clamp(actual / lim * 100, 0, 100);
+            var col = actual >= lim ? Brushes.Firebrick : pct >= 80 ? Brushes.DarkGoldenrod : Brushes.DarkGreen;
+            gaugePanel.Children.Add(new StackPanel
+            {
+                Spacing = 1,
+                Children =
+                {
+                    new TextBlock { Text = $"{src} — {what}: {actual:N0} / {lim:N0} {unit} ({actual / lim * 100:F0}% of limit)", Foreground = col, FontSize = 12 },
+                    new ProgressBar { Minimum = 0, Maximum = 100, Value = pct, Height = 10 }
+                }
+            });
+        }
     }
 
     async void Export(bool html)
@@ -227,6 +310,15 @@ public partial class MainWindow
         var path = await PickSave("Export report", $"{project.SiteName} water report", ext);
         if (path == null) return;
         File.WriteAllText(path, html ? ReportBuilder.Html(project, SelectedYear) : ReportBuilder.Csv(project, SelectedYear));
+        SetStatus("Exported " + path);
+    }
+
+    async void ExportMecp(bool html)
+    {
+        var ext = html ? "html" : "csv";
+        var path = await PickSave("Export MECP annual report", $"{project.SiteName} annual water taking {SelectedYear?.ToString() ?? DateTime.Today.Year.ToString()}", ext);
+        if (path == null) return;
+        File.WriteAllText(path, html ? ReportBuilder.MecpHtml(project, SelectedYear) : ReportBuilder.MecpCsv(project, SelectedYear));
         SetStatus("Exported " + path);
     }
 

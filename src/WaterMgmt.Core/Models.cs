@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace WaterMgmt.Core;
 
 public enum FeatureKind { Pit, StormPond, Sump, Well, WashStation, Pump, Outfall, Other }
@@ -48,6 +50,10 @@ public class Permit
     public string Holder { get; set; } = "";
     public DateTime? Issued { get; set; }
     public DateTime? Expires { get; set; }
+    /// <summary>Month (1-12) each permit year starts. Max-days-per-year limits count
+    /// over this rolling 12-month window, not necessarily the calendar year;
+    /// 1 = January (the default).</summary>
+    public int PermitYearStartMonth { get; set; } = 1;
     public List<PermitSource> Sources { get; set; } = new();
 }
 
@@ -64,9 +70,29 @@ public class TakingRecord
 
 public class SiteProject
 {
+    /// <summary>Current .wsite file format version. Bump when the serialized shape
+    /// changes and add a matching arm in ProjectStorage.Migrate.</summary>
+    public const int CurrentSchemaVersion = 2;
+
+    /// <summary>File format version of this project. Null in memory and for legacy
+    /// files saved before versioning existed (the JSON property is simply absent);
+    /// ProjectStorage stamps it on Save and migrates older files on Load.</summary>
+    public int? SchemaVersion { get; set; }
     public string SiteName { get; set; } = "New Site";
     public string? ImagePath { get; set; }
-    public Permit Permit { get; set; } = new();
+
+    /// <summary>All permits covering the site — groundwater and surface water PTTWs
+    /// are normally separate, so a site routinely carries two or more.</summary>
+    public List<Permit> Permits { get; set; } = new() { new() };
+
+    /// <summary>First permit; the one the permit tab edits by default and the one
+    /// new sources are created under. Never null.</summary>
+    [JsonIgnore]
+    public Permit PrimaryPermit
+    {
+        get { if (Permits.Count == 0) Permits.Add(new Permit()); return Permits[0]; }
+    }
+
     public List<SiteFeature> Features { get; set; } = new();
     public List<FlowLink> Links { get; set; } = new();
     public List<TakingRecord> Takings { get; set; } = new();

@@ -40,7 +40,7 @@ public static class MassBalance
             {
                 if (f.RatedLpm is { } cap && fout > cap * 1.0001)
                 { st = BalanceStatus.OverCapacity; note = $"Pumping {fout:N0} L/min exceeds rated {cap:N0}."; }
-                var src = p.Permit.Sources.FirstOrDefault(s => s.Id == f.PermitSourceId);
+                var src = p.Permits.SelectMany(pt => pt.Sources).FirstOrDefault(s => s.Id == f.PermitSourceId);
                 if (src?.MaxLitresPerMinute is { } lim && fout > lim * 1.0001)
                 { st = BalanceStatus.OverPermit; note = $"Pumping {fout:N0} L/min exceeds permit limit {lim:N0} ({src.Name})."; }
             }

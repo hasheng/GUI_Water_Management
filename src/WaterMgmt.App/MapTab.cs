@@ -241,10 +241,10 @@ public partial class MainWindow
         {
             pName.Text = f.Name; pKind.SelectedItem = f.Kind; pDewater.IsChecked = f.Dewatered;
             pRated.Text = f.RatedLpm?.ToString(); pOtherIn.Text = f.OtherInflowLpm?.ToString(); pOtherLoss.Text = f.OtherLossLpm?.ToString(); pNotes.Text = f.Notes;
-            var names = new List<string> { "(none)" }; names.AddRange(project.Permit.Sources.Select(s => s.Name));
+            var names = new List<string> { "(none)" }; names.AddRange(project.Permits.SelectMany(pt => pt.Sources).Select(s => s.Name));
             pSource.ItemsSource = names;
-            var idx = project.Permit.Sources.FindIndex(s => s.Id == f.PermitSourceId);
-            pSource.SelectedIndex = idx + 1;
+            var all = project.Permits.SelectMany(pt => pt.Sources).ToList();
+            pSource.SelectedIndex = all.FindIndex(s => s.Id == f.PermitSourceId) + 1;
         }
         if (l != null) { pFlow.Text = l.FlowLpm?.ToString(); pLabel.Text = l.Label; }
         loadingProps = false;
@@ -259,7 +259,8 @@ public partial class MainWindow
         f.RatedLpm = double.TryParse(pRated.Text, out var r) ? r : null;
         f.OtherInflowLpm = double.TryParse(pOtherIn.Text, out var oi) ? oi : null; f.OtherLossLpm = double.TryParse(pOtherLoss.Text, out var ol) ? ol : null;
         var i = pSource.SelectedIndex;
-        f.PermitSourceId = i > 0 && i - 1 < project.Permit.Sources.Count ? project.Permit.Sources[i - 1].Id : null;
+        var allSources = project.Permits.SelectMany(pt => pt.Sources).ToList();
+        f.PermitSourceId = i > 0 && i - 1 < allSources.Count ? allSources[i - 1].Id : null;
         RefreshMap();
     }
 
